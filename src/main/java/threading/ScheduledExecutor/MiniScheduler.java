@@ -147,7 +147,7 @@ public class MiniScheduler {
         return task;
     }
 
-    public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
+    public ScheduledFuture<?>   scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
         ScheduledTask task = new ScheduledTask(command, unit.toNanos(initialDelay), unit.toNanos(period), true);
         queue.put(task);
         return task;

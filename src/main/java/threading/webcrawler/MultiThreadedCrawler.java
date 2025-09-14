@@ -1,4 +1,4 @@
-package threading;
+package threading.webcrawler;
 
 import java.util.LinkedList;
 import java.util.List;
@@ -7,9 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-interface HtmlParser {
-     public  List<String> getUrls(String url) ;
-}
+
 class MultiThreadedCrawler {
     private final AtomicInteger counter = new AtomicInteger(0);
     private final Set<String> seen = ConcurrentHashMap.newKeySet();

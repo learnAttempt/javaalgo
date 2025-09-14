@@ -7,8 +7,8 @@ import java.util.concurrent.*;
 
 class NonblockingStack<T> {
 
-    private AtomicInteger count = new AtomicInteger(0);
-    private AtomicReference<StackNode<T>> top = new AtomicReference<>();
+    private final AtomicInteger count = new AtomicInteger(0);
+    private final AtomicReference<StackNode<T>> top = new AtomicReference<>();
 
     public int size() {
         return count.get();

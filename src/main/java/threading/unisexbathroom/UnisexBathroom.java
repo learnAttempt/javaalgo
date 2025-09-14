@@ -1,4 +1,4 @@
-package threading;
+package threading.unisexbathroom;
 
 import java.util.concurrent.Semaphore;
 
