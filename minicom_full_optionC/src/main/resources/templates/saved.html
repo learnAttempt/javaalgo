@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="utf-8" />
+    <title>Minicom Messenger</title>
+    <style>
+        body{font-family: Arial, Helvetica, sans-serif;margin:20px}
+        #conversations{float:left;width:28%;border-right:1px solid #ddd;padding-right:10px}
+        #chat{float:left;width:68%;padding-left:10px}
+        .conv{padding:8px;border-bottom:1px solid #eee;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+        .selected{background:#f0f8ff}
+        .msg{margin:8px 0;padding:8px;border-radius:6px}
+        .msg.user{background:#e6ffe6;text-align:right}
+        .msg.agent{background:#eef}
+        .badge{background:#ff6b6b;color:white;border-radius:12px;padding:2px 8px;font-size:12px}
+        #users{margin-bottom:10px}
+    </style>
+</head>
+<body>
+<h2>Minicom — Intercom replica (Option C: agent & user unread counts)</h2>
+
+<div id="users">
+    <strong>Users:</strong>
+    <select id="userSelect"></select>
+    <button onclick="openCreateUser()">+ Add User</button>
+    <button onclick="toggleView()">Toggle Agent/User View</button>
+    <span id="viewMode">Mode: user</span>
+</div>
+
+<div id="conversations">
+    <button onclick="createConv()">New Conversation</button>
+    <div id="convList"></div>
+</div>
+
+<div id="chat">
+    <h3 id="convTitle">Select a conversation</h3>
+    <div id="messages" style="height:400px;overflow:auto;border:1px solid #eee;padding:8px"></div>
+    <div id="composer" style="display:none;margin-top:10px">
+        <textarea id="msgBody" rows="3" style="width:100%"></textarea>
+        <button onclick="send()">Send</button>
+        <label><input type="checkbox" id="sendAsAgent"> Send as agent</label>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+<script>
+let selectedConv = null;
+let currentUser = null;
+let viewMode = 'user';
+let stompClient = null;
+
+async function api(path, opts) {
+    const res = await fetch(path, opts);
+    if (res.status === 204) return null;
+    return res.json();
+}
+
+function connectSocket() {
+    const socket = new SockJS('/ws');
+    stompClient = Stomp.over(socket);
+    stompClient.connect({}, function(frame) {
+        console.log('connected', frame);
+        stompClient.subscribe('/topic/conversations', function(message) {
+            const conv = JSON.parse(message.body);
+            loadConvs();
+            if (selectedConv && conv.id === selectedConv.id) loadMessages(conv.id);
+        });
+        // dynamic subscriptions handled on selectConv
+    });
+}
+
+async function loadUsers(){
+    const users = await api('/api/users');
+    const sel = document.getElementById('userSelect');
+    sel.innerHTML = '';
+    users.forEach(u => {
+        const o = document.createElement('option');
+        o.value = u.id; o.textContent = u.name + ' ('+u.email+')';
+        sel.appendChild(o);
+    });
+    if(users.length>0 && !currentUser){
+        currentUser = users[0];
+        document.getElementById('viewMode').textContent = 'Mode: ' + viewMode + (currentUser? ' ('+currentUser.name+')':'') ;
+    }
+}
+
+function openCreateUser(){
+    const name = prompt('Name');
+    const email = prompt('Email');
+    if(!name) return;
+    fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({name,email})})
+        .then(()=>loadUsers());
+}
+
+function toggleView(){
+    viewMode = (viewMode==='user')? 'agent' : 'user';
+    document.getElementById('viewMode').textContent = 'Mode: ' + viewMode + (currentUser? ' ('+currentUser.name+')':'');
+    loadConvs();
+}
+
+async function loadConvs(){
+   <!-- const convs = await api('/api/conversations');-->
+    const page = 0;
+    const size = 20;
+    const data = await api(`/api/conversations?page=${page}&size=${size}`);
+    const convs = data.content;
+    const el = document.getElementById('convList');
+    el.innerHTML = '';
+    convs.forEach(c => {
+        const d = document.createElement('div');
+        d.className = 'conv';
+        d.onclick = () => selectConv(c);
+        const badge = viewMode==='agent'? (c.agentUnreadCount? '<span class="badge">'+c.agentUnreadCount+'</span>':'') : (c.userUnreadCount? '<span class="badge">'+c.userUnreadCount+'</span>':'');
+        d.innerHTML = `<div>#${c.id} — ${c.subject || 'No subject'}<br/><small>${c.user? c.user.name : ''}</small></div><div>${badge}</div>`;
+        el.appendChild(d);
+    });
+}
+
+async function selectConv(c){
+    selectedConv = c;
+    document.getElementById('convTitle').textContent = `Conversation #${c.id} — ${c.subject || ''}`;
+    document.getElementById('composer').style.display = 'block';
+    await loadMessages(c.id);
+     await markMessagesAsRead(c.id);
+    // subscribe to this conv updates
+    if(stompClient) {
+        stompClient.subscribe('/topic/conversations/' + c.id, function(message) {
+            loadMessages(c.id);
+        });
+    }
+}
+
+async function loadMessages(convId){
+   <!-- const msgs = await api('/api/messages/conversations/' + convId);-->
+   const page = 0;
+const size = 50;
+const data = await api(`/api/messages/conversations/${id}?page=${page}&size=${size}`);
+const msgs = data.content;
+    const el = document.getElementById('messages');
+    el.innerHTML = '';
+    msgs.forEach(m => {
+        const d = document.createElement('div');
+        d.className = 'msg ' + (m.sender === 'user' ? 'user' : 'agent');
+        const readMark = (m.readByAgent && m.readByUser)? '✓✓' : (m.readByAgent || m.readByUser)? '✓':'';
+        d.innerHTML = `<div>${escapeHtml(m.body)}</div><small>${new Date(m.sentAt).toLocaleString()} ${readMark}</small>`;
+        el.appendChild(d);
+    });
+    el.scrollTop = el.scrollHeight;
+}
+
+async function send(){
+    if(!selectedConv) return alert('Select a conversation');
+    const body = document.getElementById('msgBody').value.trim();
+    if(!body) return;
+    const asAgent = document.getElementById('sendAsAgent').checked || viewMode==='agent';
+    const sender = asAgent? 'agent' : 'user';
+    await fetch('/api/messages/conversations/' + selectedConv.id,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sender, body})
+    });
+    document.getElementById('msgBody').value = '';
+    await loadMessages(selectedConv.id);
+}
+
+function escapeHtml(text){
+    var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+    return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+}
+
+
+async function markMessagesAsRead(convId) {
+    const messages = await api('/api/messages/conversations/' + convId);
+
+    const by = (viewMode === 'agent') ? 'agent' : 'user';
+
+    for (const m of messages) {
+        const needsRead = (by === 'agent' && !m.readByAgent) ||
+                          (by === 'user' && !m.readByUser);
+
+        if (needsRead) {
+            await api(`/api/messages/${m.id}/read?by=${by}`, { method: 'POST' });
+        }
+    }
+}
+async function createConv(){
+    const subj = prompt('Conversation subject (optional)');
+    const userId = document.getElementById('userSelect').value;
+    if(!userId) return alert('Create a user first');
+    await fetch('/api/conversations',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({subject: subj, userId: userId})
+    });
+    await loadConvs();
+}
+
+// initial load
+loadUsers().then(()=>loadConvs());
+connectSocket();
+</script>
+</body>
+</html>

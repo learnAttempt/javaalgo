@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="utf-8" />
+    <title>Minicom Messenger</title>
+    <style>
+        body{font-family: Arial, Helvetica, sans-serif;margin:20px}
+        #conversations{float:left;width:28%;border-right:1px solid #ddd;padding-right:10px;height:600px;overflow-y:auto}
+        #chat{float:left;width:68%;padding-left:10px;height:600px;display:flex;flex-direction:column}
+        .conv{padding:8px;border-bottom:1px solid #eee;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+        .msg{margin:8px 0;padding:8px;border-radius:6px}
+        .msg.user{background:#e6ffe6;text-align:right}
+        .msg.agent{background:#eef}
+        .badge{background:#ff6b6b;color:white;border-radius:12px;padding:2px 8px;font-size:12px}
+        #messages{flex:1;overflow-y:auto;border:1px solid #eee;padding:8px}
+        button { cursor:pointer }
+    </style>
+</head>
+<body>
+
+<h2>Minicom </h2>
+
+<div>
+    <strong>User:</strong>
+    <select id="userSelect"></select>
+    <button onclick="createUser()">+ Add User</button>
+    <button onclick="toggleMode()">Toggle Agent/User</button>
+    <span id="viewMode">Mode: user</span>
+</div>
+
+<div id="conversations">
+    <button onclick="createConversation()">New Conversation</button>
+    <div id="convList"></div>
+    <!--<button id="loadMoreConvsBtn" onclick="loadMoreConvs()">Load More</button>-->
+</div>
+
+<div id="chat">
+    <h3 id="convTitle">Select a conversation</h3>
+    <div id="messages"></div>
+    <button id="loadMoreMsgsBtn" onclick="loadMoreMessages()" style="display:none">Load More Messages</button>
+
+    <div id="composer" style="display:none;margin-top:10px">
+        <textarea id="msgBody" rows="3" style="width:100%"></textarea>
+        <button onclick="sendMessage()">Send</button>
+        <label><input type="checkbox" id="sendAsAgent"> Send as agent</label>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+<script>
+    // ------------------ GLOBALS ----------------------
+    let stompClient = null;
+    let selectedConv = null;
+    let currentUser = null;
+    let viewMode = 'user';
+
+    // FIX: Maintain a map of subscriptions & unsubscribe all before new one
+    let conversationSubscriptions = {};
+
+    // Pagination
+    let convPage = 0;
+    let msgPage = 0;
+    const pageSize = 20;
+
+    // ------------------ API ------------------
+    async function api(url, opts = {}) {
+        const res = await fetch(url, opts);
+        if (res.status === 204) return null;
+        const txt = await res.text();
+        try { return txt ? JSON.parse(txt) : null; }
+        catch (e) { return txt; }
+    }
+
+    // ------------------ WEBSOCKET --------------------
+    function connectSocket() {
+        const socket = new SockJS('/ws');
+        stompClient = Stomp.over(socket);
+
+        stompClient.connect({}, function(frame) {
+            console.log("Connected");
+
+            // GLOBAL INBOX LISTENER
+            stompClient.subscribe("/topic/conversations", function(message) {
+
+                const conv = JSON.parse(message.body);
+                refreshConversationInList(conv);
+
+
+            });
+        });
+    }
+
+    // ------------------ USERS ------------------------
+    async function loadUsers() {
+        const users = await api('/api/users');
+        const sel = document.getElementById("userSelect");
+        sel.innerHTML = "";
+
+        users.forEach(u => {
+            const opt = document.createElement("option");
+            opt.value = u.id;
+            opt.textContent = `${u.name} (${u.email})`;
+            sel.appendChild(opt);
+        });
+
+        if (users.length > 0 && !currentUser) {
+            currentUser = users[0];
+        }
+    }
+
+    async function createUser() {
+        const name = prompt("Name");
+        const email = prompt("Email");
+        if (!name) return;
+
+        await api('/api/users', {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, email})
+        });
+
+        loadUsers();
+    }
+
+    function toggleMode() {
+        viewMode = (viewMode === 'user') ? 'agent' : 'user';
+        document.getElementById("viewMode").textContent = "Mode: " + viewMode;
+        convPage = 0;
+        loadConversations(true);
+    }
+
+    // ------------------ CONVERSATIONS --------------------
+    async function loadConversations(reset = false) {
+        if (reset) {
+            convPage = 0;
+            document.getElementById('convList').innerHTML = "";
+        }
+
+        const data = await api(`/api/conversations?page=${convPage}&size=${pageSize}`);
+        const convs = data.content;
+
+        const el = document.getElementById('convList');
+
+        convs.forEach(c => {
+            const div = document.createElement("div");
+            div.className = "conv";
+            div.onclick = () => selectConversation(c);
+
+            const unread =
+                viewMode === 'agent'
+                ? c.agentUnreadCount
+                : c.userUnreadCount;
+
+            div.innerHTML = `
+                <div>#${c.id} — ${c.subject || 'No subject'}
+                <br/><small>${c.user ? c.user.name : ''}</small></div>
+                ${unread > 0 ? `<span class="badge">${unread}</span>` : ''}
+            `;
+
+            el.appendChild(div);
+        });
+
+        convPage++;
+    }
+
+    function refreshConversationInList(conv) {
+        const list = document.getElementById("convList").children;
+
+        for (let div of list) {
+            if (div.innerText.includes(`#${conv.id} —`)) {
+                div.querySelector('.badge')?.remove();
+
+                const unread =
+                    viewMode === 'agent'
+                    ? conv.agentUnreadCount
+                    : conv.userUnreadCount;
+
+                if (unread > 0) {
+                    const badge = document.createElement("span");
+                    badge.className = "badge";
+                    badge.textContent = unread;
+                    div.appendChild(badge);
+                }
+            }
+        }
+    }
+
+    function loadMoreConvs() { loadConversations(); }
+
+    // ------------------ CREATE CONVERSATION ------------------
+    async function createConversation() {
+        const subj = prompt("Conversation subject (optional)");
+        const userId = document.getElementById("userSelect").value;
+        if (!userId) return alert("Choose a user first");
+
+        await api('/api/conversations', {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({subject: subj, userId})
+        });
+
+        loadConversations(true);
+    }
+
+    // ------------------ SELECT A CONVERSATION ------------------
+    async function selectConversation(conv) {
+        selectedConv = conv;
+        msgPage = 0;
+
+        document.getElementById("convTitle").textContent =
+            `Conversation #${conv.id} — ${conv.subject || ''}`;
+        document.getElementById("composer").style.display = "block";
+
+        await loadMessages(true);
+        await markMessagesAsRead(conv.id);
+
+        // ❗ FIX: Remove ALL previous conversation subscriptions
+        for (const convId in conversationSubscriptions) {
+            conversationSubscriptions[convId].unsubscribe();
+        }
+        conversationSubscriptions = {};
+
+        // ❗ Subscribe ONLY once to this conversation
+        conversationSubscriptions[conv.id] =
+            stompClient.subscribe(`/topic/conversations/${conv.id}`, function (message) {
+                loadMessages(true);
+            });
+    }
+
+    // ------------------ MESSAGES -----------------------------
+    async function loadMessages(reset = false) {
+        if (!selectedConv) return;
+
+        const container = document.getElementById("messages");
+
+        if (reset) {
+            container.innerHTML = "";
+            msgPage = 0;
+        }
+
+        const data = await api(`/api/messages/conversations/${selectedConv.id}?page=${msgPage}&size=${pageSize}`);
+        const msgs = data.content;
+
+        msgs.forEach(m => {
+            const div = document.createElement("div");
+            div.className = "msg " + (m.sender === "agent" ? "agent" : "user");
+
+            const check = (m.readByAgent && m.readByUser)
+                ? "✓✓"
+                : (m.readByAgent || m.readByUser)
+                    ? "✓"
+                    : "";
+
+            div.innerHTML = `
+                <div>${escapeHtml(m.body)}</div>
+                <small>${new Date(m.sentAt).toLocaleString()} ${check}</small>
+            `;
+
+            container.appendChild(div);
+        });
+
+        msgPage++;
+        document.getElementById("loadMoreMsgsBtn").style.display =
+            msgs.length === pageSize ? "block" : "none";
+    }
+
+    function loadMoreMessages() {
+        loadMessages();
+    }
+
+    // ------------------ MARK READ -----------------------------
+    async function markMessagesAsRead(convId) {
+        const data = await api(`/api/messages/conversations/${convId}?page=0&size=200`);
+        const by = (viewMode === 'agent') ? 'agent' : 'user';
+
+        for (const m of data.content) {
+            const needsRead =
+                (by === 'agent' && !m.readByAgent) ||
+                (by === 'user' && !m.readByUser);
+
+            if (needsRead) {
+                await api(`/api/messages/${m.id}/read?by=${by}`, { method: "POST" });
+            }
+        }
+    }
+
+    // ------------------ SEND MESSAGE --------------------------
+    async function sendMessage() {
+    if (!selectedConv) return;
+
+    const body = document.getElementById("msgBody").value.trim();
+    if (!body) return;
+
+    const sender =
+        (viewMode === 'agent' || document.getElementById("sendAsAgent").checked)
+        ? "agent"
+        : "user";
+
+    await api(`/api/messages/conversations/${selectedConv.id}`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({sender, body})
+    });
+
+    document.getElementById("msgBody").value = "";
+}
+
+    // ------------------ UTIL -------------------------------
+    function escapeHtml(t){
+        var map={ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#039;" };
+        return t.replace(/[&<>\"']/g, m => map[m]);
+    }
+
+    // ------------------ INIT -------------------------------
+    loadUsers().then(() => loadConversations(true));
+    connectSocket();
+</script>
+
+</body>
+</html>
